@@ -40,37 +40,62 @@ def find_m3u8_url(base_url, video_id=None):
         if match:
             video_id = match.group(1)
     
-    # Try common patterns
+    # Try to construct from segment URL (like .dts or .ts files)
+    if ('.dts' in base_url or '.ts' in base_url) and '/video' in base_url:
+        # Remove segment filename and quality folder to get base
+        # From: https://domain.com/video-id/720p/video180.dts
+        # To: https://domain.com/video-id/playlist.m3u8
+        base = re.sub(r'/\d+p/video\d+\.(dts|ts).*$', '', base_url)
+        possible_urls.extend([
+            f"{base}/playlist.m3u8",
+            f"{base}/master.m3u8",
+        ])
+        
+        # Also try keeping the quality folder
+        base_with_quality = re.sub(r'/video\d+\.(dts|ts).*$', '', base_url)
+        possible_urls.append(f"{base_with_quality}/playlist.m3u8")
+    
+    # Try common patterns with video ID
     if video_id:
         base_domain = re.search(r'(https?://[^/]+)', base_url)
         if base_domain:
             domain = base_domain.group(1)
-            possible_urls = [
+            possible_urls.extend([
                 f"{domain}/{video_id}/playlist.m3u8",
                 f"{domain}/{video_id}/master.m3u8",
-            ]
+            ])
     
-    # Try to construct from segment URL
-    if '/video' in base_url and '.dts' in base_url:
-        # Remove segment filename
-        base = re.sub(r'/video\d+\.dts.*$', '', base_url)
-        possible_urls.append(f"{base}/playlist.m3u8")
+    # Test each possible URL with proper headers
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'Referer': 'https://iframe.mediadelivery.net/',
+        'Origin': 'https://iframe.mediadelivery.net'
+    }
     
-    # Test each possible URL
     for url in possible_urls:
         try:
-            response = requests.head(url, timeout=5)
+            print(f"Trying: {url}")
+            response = requests.head(url, headers=headers, timeout=5)
             if response.status_code == 200:
+                print(f"✓ Found playlist: {url}")
                 return url
-        except:
+        except Exception as e:
+            print(f"  Failed: {e}")
             continue
     
+    print(f"⚠ Could not find playlist, returning original URL")
     return base_url
 
 def get_best_quality_stream(m3u8_url):
     """Parse m3u8 and find the highest quality stream"""
     try:
-        response = requests.get(m3u8_url, timeout=10)
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+            'Referer': 'https://iframe.mediadelivery.net/',
+            'Origin': 'https://iframe.mediadelivery.net'
+        }
+        
+        response = requests.get(m3u8_url, headers=headers, timeout=10)
         response.raise_for_status()
         
         playlist = m3u8.loads(response.text)
@@ -95,7 +120,7 @@ def get_best_quality_stream(m3u8_url):
         return m3u8_url
 
 def download_video(url, output_filename):
-    """Download and convert m3u8 stream to MP4 using ffmpeg"""
+    """Download and convert m3u8 stream to MP4 by manually downloading segments"""
     ffmpeg_path = get_ffmpeg_path()
     
     if not ffmpeg_path:
@@ -108,38 +133,78 @@ def download_video(url, output_filename):
         # Get the best quality stream
         best_stream_url = get_best_quality_stream(m3u8_url)
         
+        print(f"Downloading from: {best_stream_url}")
+        
+        # Prepare headers for requests
+        headers = {
+            'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36',
+            'Referer': 'https://iframe.mediadelivery.net/',
+            'Origin': 'https://iframe.mediadelivery.net',
+            'Accept': '*/*'
+        }
+        
+        # Download and parse the playlist
+        response = requests.get(best_stream_url, headers=headers, timeout=30)
+        response.raise_for_status()
+        
+        playlist = m3u8.loads(response.text)
+        
+        if not playlist.segments:
+            return False, "No video segments found in playlist"
+        
+        # Create temp directory for segments
+        temp_dir = DOWNLOADS_DIR / 'temp_segments'
+        temp_dir.mkdir(exist_ok=True)
+        
+        # Base URL for resolving relative segment URLs
+        base_url = best_stream_url.rsplit('/', 1)[0]
+        
+        print(f"Found {len(playlist.segments)} segments to download")
+        
+        # Download each segment
+        segment_files = []
+        for i, segment in enumerate(playlist.segments):
+            segment_url = segment.uri if segment.uri.startswith('http') else f"{base_url}/{segment.uri}"
+            segment_file = temp_dir / f"segment_{i:04d}.ts"
+            
+            print(f"Downloading segment {i+1}/{len(playlist.segments)}...")
+            
+            seg_response = requests.get(segment_url, headers=headers, timeout=30)
+            seg_response.raise_for_status()
+            
+            with open(segment_file, 'wb') as f:
+                f.write(seg_response.content)
+            
+            segment_files.append(segment_file)
+        
+        print("All segments downloaded, combining with FFmpeg...")
+        
+        # Create concat file for FFmpeg
+        concat_file = temp_dir / 'concat.txt'
+        with open(concat_file, 'w') as f:
+            for seg_file in segment_files:
+                f.write(f"file '{seg_file.absolute()}'\n")
+        
+        # Use FFmpeg to concatenate segments
         output_path = DOWNLOADS_DIR / output_filename
-        
-        # Prepare headers to bypass CDN restrictions (403 Forbidden)
-        # These headers mimic a browser request
-        headers = (
-            "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36\r\n"
-            "Referer: https://iframe.mediadelivery.net/\r\n"
-            "Origin: https://iframe.mediadelivery.net\r\n"
-            "Accept: */*\r\n"
-        )
-        
-        # Use ffmpeg to download and convert with proper headers
         cmd = [
             ffmpeg_path,
-            '-headers', headers,  # Add browser-like headers to bypass 403
-            '-i', best_stream_url,
-            '-c', 'copy',  # Copy without re-encoding (faster)
-            '-bsf:a', 'aac_adtstoasc',  # Fix AAC bitstream
-            '-y',  # Overwrite output file
+            '-f', 'concat',
+            '-safe', '0',
+            '-i', str(concat_file),
+            '-c', 'copy',
+            '-y',
             str(output_path)
         ]
         
-        print(f"Downloading from: {best_stream_url}")
-        print(f"Command: {' '.join(cmd[:3])}... [URL and options]")
+        result = subprocess.run(cmd, capture_output=True, text=True)
         
-        result = subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True
-        )
+        # Cleanup temp files
+        import shutil
+        shutil.rmtree(temp_dir, ignore_errors=True)
         
         if result.returncode == 0 and output_path.exists():
+            print(f"✓ Video saved to: {output_path}")
             return True, str(output_path)
         else:
             error_msg = result.stderr if result.stderr else "Unknown error"
