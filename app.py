@@ -14,16 +14,13 @@ DOWNLOADS_DIR = Path('downloads')
 DOWNLOADS_DIR.mkdir(exist_ok=True)
 
 def get_ffmpeg_path():
-    """Check if ffmpeg is available in PATH or local directory"""
-    # Check if ffmpeg is in PATH
-    try:
-        subprocess.run(['ffmpeg', '-version'], capture_output=True, check=True)
-        return 'ffmpeg'
-    except (subprocess.CalledProcessError, FileNotFoundError):
-        pass
+    """Get path to local ffmpeg executable"""
+    # Use local ffmpeg from ffmpeg/bin directory
+    if os.name == 'nt':  # Windows
+        local_ffmpeg = Path('ffmpeg/bin/ffmpeg.exe')
+    else:  # Linux/Mac
+        local_ffmpeg = Path('ffmpeg/bin/ffmpeg')
     
-    # Check for local ffmpeg
-    local_ffmpeg = Path('ffmpeg.exe' if os.name == 'nt' else 'ffmpeg')
     if local_ffmpeg.exists():
         return str(local_ffmpeg)
     
