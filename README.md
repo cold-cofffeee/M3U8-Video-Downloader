@@ -1,4 +1,4 @@
-# 🎬 ACS Video Downloader
+# 🎬 M3U8 Video Downloader
 
 A minimalistic web application designed to download and convert HLS/m3u8 video streams (commonly used for anti-piracy protection on CDN platforms) to MP4 format with the highest available quality.
 
@@ -29,8 +29,8 @@ This tool is designed for content creators who need to download their own video 
 ### 1. Clone the Repository
 
 ```bash
-git clone https://github.com/yourusername/ACS-Video-Downloader.git
-cd ACS-Video-Downloader
+git clone https://github.com/yourusername/M3U8-Video-Downloader.git
+cd M3U8-Video-Downloader
 ```
 
 **Note**: This repository uses Git LFS (Large File Storage) to handle FFmpeg binaries (200MB+). Make sure you have Git LFS installed:
@@ -99,7 +99,7 @@ https://vz-eb59df21-3f5.b-cdn.net/32c7c9cf-b006-475f-bc4c-82db42899982/720p/vide
 ## 📂 File Structure
 
 ```
-ACS-Video-Downloader/
+M3U8-Video-Downloader/
 ├── app.py                 # Main Flask application
 ├── setup_ffmpeg.py        # FFmpeg setup helper (legacy)
 ├── requirements.txt       # Python dependencies
