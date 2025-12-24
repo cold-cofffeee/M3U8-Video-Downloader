@@ -4,6 +4,8 @@ import subprocess
 import requests
 import m3u8
 import re
+import uuid
+import threading
 from pathlib import Path
 from datetime import datetime
 
@@ -12,6 +14,19 @@ app = Flask(__name__)
 # Create downloads directory
 DOWNLOADS_DIR = Path('downloads')
 DOWNLOADS_DIR.mkdir(exist_ok=True)
+
+# Store download progress and status
+download_jobs = {}
+
+class DownloadJob:
+    def __init__(self, job_id):
+        self.job_id = job_id
+        self.status = 'downloading'  # downloading, complete, error, cancelled
+        self.progress = 0
+        self.message = 'Starting...'
+        self.cancelled = False
+        self.filename = None
+        self.error = None
 
 def get_ffmpeg_path():
     """Get path to local ffmpeg executable"""
@@ -119,18 +134,28 @@ def get_best_quality_stream(m3u8_url):
         print(f"Error parsing m3u8: {e}")
         return m3u8_url
 
-def download_video(url, output_filename):
-    """Download and convert m3u8 stream to MP4 by manually downloading segments"""
+def download_video_with_progress(url, output_filename, job):
+    """Download and convert m3u8 stream to MP4 by manually downloading segments with progress tracking"""
     ffmpeg_path = get_ffmpeg_path()
     
     if not ffmpeg_path:
+        job.status = 'error'
+        job.error = "FFmpeg not found"
         return False, "FFmpeg not found. Please install ffmpeg or place ffmpeg.exe in the app directory."
     
     try:
         # Find the actual m3u8 URL
+        job.message = "Finding playlist URL..."
+        job.progress = 5
         m3u8_url = find_m3u8_url(url)
         
+        if job.cancelled:
+            job.status = 'cancelled'
+            return False, "Download cancelled"
+        
         # Get the best quality stream
+        job.message = "Selecting best quality stream..."
+        job.progress = 10
         best_stream_url = get_best_quality_stream(m3u8_url)
         
         print(f"Downloading from: {best_stream_url}")
@@ -144,30 +169,44 @@ def download_video(url, output_filename):
         }
         
         # Download and parse the playlist
+        job.message = "Loading playlist..."
         response = requests.get(best_stream_url, headers=headers, timeout=30)
         response.raise_for_status()
         
         playlist = m3u8.loads(response.text)
         
         if not playlist.segments:
+            job.status = 'error'
+            job.error = "No video segments found in playlist"
             return False, "No video segments found in playlist"
         
         # Create temp directory for segments
-        temp_dir = DOWNLOADS_DIR / 'temp_segments'
+        temp_dir = DOWNLOADS_DIR / f'temp_segments_{job.job_id}'
         temp_dir.mkdir(exist_ok=True)
         
         # Base URL for resolving relative segment URLs
         base_url = best_stream_url.rsplit('/', 1)[0]
         
-        print(f"Found {len(playlist.segments)} segments to download")
+        total_segments = len(playlist.segments)
+        print(f"Found {total_segments} segments to download")
         
         # Download each segment
         segment_files = []
         for i, segment in enumerate(playlist.segments):
+            if job.cancelled:
+                job.status = 'cancelled'
+                import shutil
+                shutil.rmtree(temp_dir, ignore_errors=True)
+                return False, "Download cancelled"
+            
             segment_url = segment.uri if segment.uri.startswith('http') else f"{base_url}/{segment.uri}"
             segment_file = temp_dir / f"segment_{i:04d}.ts"
             
-            print(f"Downloading segment {i+1}/{len(playlist.segments)}...")
+            # Update progress (15% to 85% for downloading)
+            progress = 15 + (70 * (i / total_segments))
+            job.progress = progress
+            job.message = f"Downloading segment {i+1}/{total_segments}..."
+            print(f"Downloading segment {i+1}/{total_segments}...")
             
             seg_response = requests.get(segment_url, headers=headers, timeout=30)
             seg_response.raise_for_status()
@@ -177,13 +216,23 @@ def download_video(url, output_filename):
             
             segment_files.append(segment_file)
         
+        if job.cancelled:
+            job.status = 'cancelled'
+            import shutil
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            return False, "Download cancelled"
+        
+        job.progress = 90
+        job.message = "Combining segments with FFmpeg..."
         print("All segments downloaded, combining with FFmpeg...")
         
-        # Create concat file for FFmpeg
+        # Create concat file for FFmpeg (use forward slashes for compatibility)
         concat_file = temp_dir / 'concat.txt'
-        with open(concat_file, 'w') as f:
+        with open(concat_file, 'w', encoding='utf-8') as f:
             for seg_file in segment_files:
-                f.write(f"file '{seg_file.absolute()}'\n")
+                # Convert Windows path to forward slashes and escape for FFmpeg
+                path_str = str(seg_file.absolute()).replace('\\', '/')
+                f.write(f"file '{path_str}'\n")
         
         # Use FFmpeg to concatenate segments
         output_path = DOWNLOADS_DIR / output_filename
@@ -204,16 +253,29 @@ def download_video(url, output_filename):
         shutil.rmtree(temp_dir, ignore_errors=True)
         
         if result.returncode == 0 and output_path.exists():
+            job.progress = 100
+            job.status = 'complete'
+            job.message = "Download complete!"
+            job.filename = output_filename
             print(f"✓ Video saved to: {output_path}")
             return True, str(output_path)
         else:
             error_msg = result.stderr if result.stderr else "Unknown error"
+            job.status = 'error'
+            job.error = error_msg
             print(f"FFmpeg error: {error_msg}")
             return False, f"FFmpeg error: {error_msg}"
             
     except Exception as e:
+        job.status = 'error'
+        job.error = str(e)
         print(f"Download error: {e}")
         return False, str(e)
+
+def download_thread(url, output_filename, job_id):
+    """Background thread for downloading"""
+    job = download_jobs[job_id]
+    download_video_with_progress(url, output_filename, job)
 
 @app.route('/')
 def index():
@@ -227,23 +289,45 @@ def download():
     if not url:
         return jsonify({'success': False, 'error': 'No URL provided'})
     
-    # Generate output filename
+    # Generate job ID and output filename
+    job_id = str(uuid.uuid4())
     timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
     output_filename = f"video_{timestamp}.mp4"
     
-    success, result = download_video(url, output_filename)
+    # Create job
+    job = DownloadJob(job_id)
+    download_jobs[job_id] = job
     
-    if success:
-        return jsonify({
-            'success': True,
-            'filename': output_filename,
-            'path': result
-        })
-    else:
-        return jsonify({
-            'success': False,
-            'error': result
-        })
+    # Start download in background thread
+    thread = threading.Thread(target=download_thread, args=(url, output_filename, job_id))
+    thread.daemon = True
+    thread.start()
+    
+    return jsonify({
+        'job_id': job_id
+    })
+
+@app.route('/progress/<job_id>')
+def progress(job_id):
+    job = download_jobs.get(job_id)
+    if not job:
+        return jsonify({'status': 'error', 'message': 'Job not found'})
+    
+    return jsonify({
+        'status': job.status,
+        'progress': job.progress,
+        'message': job.message,
+        'filename': job.filename,
+        'error': job.error
+    })
+
+@app.route('/cancel/<job_id>', methods=['POST'])
+def cancel(job_id):
+    job = download_jobs.get(job_id)
+    if job:
+        job.cancelled = True
+        job.status = 'cancelled'
+    return jsonify({'success': True})
 
 @app.route('/get-file/<filename>')
 def get_file(filename):

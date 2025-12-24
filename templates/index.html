@@ -145,6 +145,59 @@
             display: block;
         }
 
+        .progress-container {
+            display: none;
+            margin-top: 20px;
+        }
+
+        .progress-container.active {
+            display: block;
+        }
+
+        .progress-bar-wrapper {
+            background: #e0e0e0;
+            border-radius: 8px;
+            height: 24px;
+            overflow: hidden;
+            position: relative;
+        }
+
+        .progress-bar {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            height: 100%;
+            width: 0%;
+            transition: width 0.3s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            color: white;
+            font-size: 12px;
+            font-weight: 600;
+        }
+
+        .progress-text {
+            margin-top: 10px;
+            text-align: center;
+            color: #666;
+            font-size: 14px;
+        }
+
+        .cancel-btn {
+            background: #dc3545;
+            color: white;
+            border: none;
+            padding: 10px 24px;
+            border-radius: 8px;
+            font-size: 14px;
+            cursor: pointer;
+            margin-top: 10px;
+            width: 100%;
+        }
+
+        .cancel-btn:hover {
+            background: #c82333;
+        }
+
         @keyframes spin {
             0% { transform: rotate(0deg); }
             100% { transform: rotate(360deg); }
@@ -254,6 +307,14 @@
 
         <button id="downloadBtn" onclick="startDownload()">Download Video</button>
 
+        <div class="progress-container" id="progressContainer">
+            <div class="progress-bar-wrapper">
+                <div class="progress-bar" id="progressBar">0%</div>
+            </div>
+            <div class="progress-text" id="progressText">Initializing...</div>
+            <button class="cancel-btn" id="cancelBtn" onclick="cancelDownload()">Cancel Download</button>
+        </div>
+
         <div class="loader" id="loader"></div>
         <div class="status" id="status"></div>
 
@@ -273,6 +334,9 @@
     </div>
 
     <script>
+        let downloadJobId = null;
+        let progressInterval = null;
+
         function showStatus(message, type) {
             const status = document.getElementById('status');
             status.textContent = message;
@@ -283,10 +347,61 @@
             document.getElementById('status').className = 'status';
         }
 
+        function updateProgress(percent, text) {
+            const progressBar = document.getElementById('progressBar');
+            const progressText = document.getElementById('progressText');
+            progressBar.style.width = percent + '%';
+            progressBar.textContent = Math.round(percent) + '%';
+            progressText.textContent = text;
+        }
+
+        function showProgressBar() {
+            document.getElementById('progressContainer').classList.add('active');
+            updateProgress(0, 'Starting download...');
+        }
+
+        function hideProgressBar() {
+            document.getElementById('progressContainer').classList.remove('active');
+        }
+
+        async function checkProgress() {
+            if (!downloadJobId) return;
+
+            try {
+                const response = await fetch(`/progress/${downloadJobId}`);
+                const data = await response.json();
+
+                if (data.status === 'downloading') {
+                    updateProgress(data.progress, data.message);
+                } else if (data.status === 'complete') {
+                    clearInterval(progressInterval);
+                    hideProgressBar();
+                    showStatus('✓ Video downloaded successfully! Click "Save to Device" below.', 'success');
+                    loadDownloads();
+                    document.getElementById('videoUrl').value = '';
+                    document.getElementById('downloadBtn').disabled = false;
+                    downloadJobId = null;
+                } else if (data.status === 'error') {
+                    clearInterval(progressInterval);
+                    hideProgressBar();
+                    showStatus('✗ Error: ' + data.message, 'error');
+                    document.getElementById('downloadBtn').disabled = false;
+                    downloadJobId = null;
+                } else if (data.status === 'cancelled') {
+                    clearInterval(progressInterval);
+                    hideProgressBar();
+                    showStatus('Download cancelled', 'info');
+                    document.getElementById('downloadBtn').disabled = false;
+                    downloadJobId = null;
+                }
+            } catch (error) {
+                console.error('Error checking progress:', error);
+            }
+        }
+
         async function startDownload() {
             const url = document.getElementById('videoUrl').value.trim();
             const btn = document.getElementById('downloadBtn');
-            const loader = document.getElementById('loader');
 
             if (!url) {
                 showStatus('Please enter a URL', 'error');
@@ -294,9 +409,8 @@
             }
 
             btn.disabled = true;
-            loader.classList.add('active');
             hideStatus();
-            showStatus('Downloading and converting video... This may take a few minutes.', 'info');
+            showProgressBar();
 
             try {
                 const response = await fetch('/download', {
@@ -309,18 +423,35 @@
 
                 const data = await response.json();
 
-                if (data.success) {
-                    showStatus('✓ Video downloaded successfully! Check the downloads section below.', 'success');
-                    loadDownloads();
-                    document.getElementById('videoUrl').value = '';
-                } else {
+                if (data.job_id) {
+                    downloadJobId = data.job_id;
+                    progressInterval = setInterval(checkProgress, 500);
+                } else if (data.error) {
+                    hideProgressBar();
                     showStatus('✗ Error: ' + data.error, 'error');
+                    btn.disabled = false;
                 }
             } catch (error) {
+                hideProgressBar();
                 showStatus('✗ Network error: ' + error.message, 'error');
-            } finally {
                 btn.disabled = false;
-                loader.classList.remove('active');
+            }
+        }
+
+        async function cancelDownload() {
+            if (!downloadJobId) return;
+
+            try {
+                await fetch(`/cancel/${downloadJobId}`, { method: 'POST' });
+                if (progressInterval) {
+                    clearInterval(progressInterval);
+                }
+                hideProgressBar();
+                showStatus('Download cancelled', 'info');
+                document.getElementById('downloadBtn').disabled = false;
+                downloadJobId = null;
+            } catch (error) {
+                console.error('Error cancelling download:', error);
             }
         }
 
@@ -342,7 +473,7 @@
                             <div class="download-name">${file.name}</div>
                             <div class="download-meta">${file.size} • ${file.created}</div>
                         </div>
-                        <a href="/get-file/${file.name}" class="download-btn" download>Download</a>
+                        <a href="/get-file/${file.name}" class="download-btn" download="${file.name}">Save to Device</a>
                     </div>
                 `).join('');
             } catch (error) {
