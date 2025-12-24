@@ -27,6 +27,8 @@ class DownloadJob:
         self.cancelled = False
         self.filename = None
         self.error = None
+        self.created_at = datetime.now()
+        self.temp_dir = None  # Track temp directory for cleanup
 
 def get_ffmpeg_path():
     """Get path to local ffmpeg executable"""
@@ -183,6 +185,7 @@ def download_video_with_progress(url, output_filename, job):
         # Create temp directory for segments
         temp_dir = DOWNLOADS_DIR / f'temp_segments_{job.job_id}'
         temp_dir.mkdir(exist_ok=True)
+        job.temp_dir = temp_dir  # Store for cleanup
         
         # Base URL for resolving relative segment URLs
         base_url = best_stream_url.rsplit('/', 1)[0]
@@ -208,11 +211,32 @@ def download_video_with_progress(url, output_filename, job):
             job.message = f"Downloading segment {i+1}/{total_segments}..."
             print(f"Downloading segment {i+1}/{total_segments}...")
             
-            seg_response = requests.get(segment_url, headers=headers, timeout=30)
-            seg_response.raise_for_status()
-            
-            with open(segment_file, 'wb') as f:
-                f.write(seg_response.content)
+            # Retry logic for failed downloads
+            max_retries = 3
+            for retry in range(max_retries):
+                try:
+                    seg_response = requests.get(segment_url, headers=headers, timeout=30)
+                    seg_response.raise_for_status()
+                    
+                    # Validate segment has content
+                    if len(seg_response.content) == 0:
+                        raise ValueError("Empty segment received")
+                    
+                    with open(segment_file, 'wb') as f:
+                        f.write(seg_response.content)
+                    
+                    # Verify file was written
+                    if not segment_file.exists() or segment_file.stat().st_size == 0:
+                        raise ValueError("Segment file not written properly")
+                    
+                    break  # Success, exit retry loop
+                except Exception as e:
+                    if retry == max_retries - 1:
+                        # Last retry failed
+                        raise Exception(f"Failed to download segment {i+1} after {max_retries} attempts: {str(e)}")
+                    print(f"Retry {retry+1}/{max_retries} for segment {i+1}...")
+                    import time
+                    time.sleep(1)  # Wait before retry
             
             segment_files.append(segment_file)
         
@@ -233,6 +257,21 @@ def download_video_with_progress(url, output_filename, job):
                 # Convert Windows path to forward slashes and escape for FFmpeg
                 path_str = str(seg_file.absolute()).replace('\\', '/')
                 f.write(f"file '{path_str}'\n")
+        
+        # Debug: Print concat file contents
+        print(f"Concat file location: {concat_file}")
+        print(f"Number of segments: {len(segment_files)}")
+        
+        # Verify all segment files exist
+        missing_files = [f for f in segment_files if not f.exists()]
+        if missing_files:
+            error_msg = f"Missing {len(missing_files)} segment files"
+            job.status = 'error'
+            job.error = error_msg
+            print(f"Error: {error_msg}")
+            import shutil
+            shutil.rmtree(temp_dir, ignore_errors=True)
+            return False, error_msg
         
         # Use FFmpeg to concatenate segments
         output_path = DOWNLOADS_DIR / output_filename
@@ -260,22 +299,62 @@ def download_video_with_progress(url, output_filename, job):
             print(f"✓ Video saved to: {output_path}")
             return True, str(output_path)
         else:
-            error_msg = result.stderr if result.stderr else "Unknown error"
+            # Extract only the relevant error message (last few lines)
+            stderr_lines = result.stderr.strip().split('\n') if result.stderr else []
+            # Get last 5 lines or less
+            error_lines = stderr_lines[-5:] if len(stderr_lines) > 5 else stderr_lines
+            error_msg = '\n'.join(error_lines) if error_lines else "Unknown FFmpeg error"
+            
             job.status = 'error'
             job.error = error_msg
-            print(f"FFmpeg error: {error_msg}")
-            return False, f"FFmpeg error: {error_msg}"
+            print(f"FFmpeg error (full): {result.stderr}")
+            print(f"FFmpeg error (summary): {error_msg}")
+            return False, error_msg
             
     except Exception as e:
         job.status = 'error'
         job.error = str(e)
         print(f"Download error: {e}")
+        # Cleanup temp directory on error
+        if job.temp_dir and job.temp_dir.exists():
+            import shutil
+            shutil.rmtree(job.temp_dir, ignore_errors=True)
         return False, str(e)
 
 def download_thread(url, output_filename, job_id):
     """Background thread for downloading"""
-    job = download_jobs[job_id]
-    download_video_with_progress(url, output_filename, job)
+    try:
+        job = download_jobs.get(job_id)
+        if not job:
+            print(f"Job {job_id} not found")
+            return
+        download_video_with_progress(url, output_filename, job)
+    except Exception as e:
+        print(f"Fatal error in download thread: {e}")
+        if job_id in download_jobs:
+            job = download_jobs[job_id]
+            job.status = 'error'
+            job.error = f"Unexpected error: {str(e)}"
+
+def cleanup_old_jobs():
+    """Remove jobs older than 1 hour to prevent memory leaks"""
+    from datetime import timedelta
+    cutoff_time = datetime.now() - timedelta(hours=1)
+    
+    jobs_to_remove = []
+    for job_id, job in download_jobs.items():
+        if job.created_at < cutoff_time:
+            # Cleanup temp directory if exists
+            if job.temp_dir and job.temp_dir.exists():
+                import shutil
+                shutil.rmtree(job.temp_dir, ignore_errors=True)
+            jobs_to_remove.append(job_id)
+    
+    for job_id in jobs_to_remove:
+        del download_jobs[job_id]
+    
+    if jobs_to_remove:
+        print(f"Cleaned up {len(jobs_to_remove)} old jobs")
 
 @app.route('/')
 def index():
@@ -288,6 +367,9 @@ def download():
     
     if not url:
         return jsonify({'success': False, 'error': 'No URL provided'})
+    
+    # Cleanup old jobs (older than 1 hour)
+    cleanup_old_jobs()
     
     # Generate job ID and output filename
     job_id = str(uuid.uuid4())
@@ -348,6 +430,12 @@ def list_downloads():
     return jsonify(files)
 
 if __name__ == '__main__':
+    # Cleanup any abandoned temp directories from previous runs
+    import shutil
+    for temp_dir in DOWNLOADS_DIR.glob('temp_segments_*'):
+        print(f"Cleaning up abandoned temp directory: {temp_dir}")
+        shutil.rmtree(temp_dir, ignore_errors=True)
+    
     ffmpeg = get_ffmpeg_path()
     if ffmpeg:
         print(f"✓ FFmpeg found: {ffmpeg}")
