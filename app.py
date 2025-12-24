@@ -110,9 +110,19 @@ def download_video(url, output_filename):
         
         output_path = DOWNLOADS_DIR / output_filename
         
-        # Use ffmpeg to download and convert
+        # Prepare headers to bypass CDN restrictions (403 Forbidden)
+        # These headers mimic a browser request
+        headers = (
+            "User-Agent: Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/143.0.0.0 Safari/537.36\r\n"
+            "Referer: https://iframe.mediadelivery.net/\r\n"
+            "Origin: https://iframe.mediadelivery.net\r\n"
+            "Accept: */*\r\n"
+        )
+        
+        # Use ffmpeg to download and convert with proper headers
         cmd = [
             ffmpeg_path,
+            '-headers', headers,  # Add browser-like headers to bypass 403
             '-i', best_stream_url,
             '-c', 'copy',  # Copy without re-encoding (faster)
             '-bsf:a', 'aac_adtstoasc',  # Fix AAC bitstream
@@ -121,7 +131,7 @@ def download_video(url, output_filename):
         ]
         
         print(f"Downloading from: {best_stream_url}")
-        print(f"Command: {' '.join(cmd)}")
+        print(f"Command: {' '.join(cmd[:3])}... [URL and options]")
         
         result = subprocess.run(
             cmd,
