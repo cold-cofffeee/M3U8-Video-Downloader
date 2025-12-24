@@ -1,0 +1,364 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>M3U8 Video Downloader</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            padding: 20px;
+        }
+
+        .container {
+            background: white;
+            border-radius: 16px;
+            box-shadow: 0 20px 60px rgba(0, 0, 0, 0.3);
+            padding: 40px;
+            max-width: 800px;
+            width: 100%;
+        }
+
+        h1 {
+            color: #333;
+            margin-bottom: 10px;
+            font-size: 28px;
+        }
+
+        .subtitle {
+            color: #666;
+            margin-bottom: 30px;
+            font-size: 14px;
+        }
+
+        .input-group {
+            margin-bottom: 20px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 8px;
+            color: #555;
+            font-weight: 500;
+        }
+
+        input[type="text"] {
+            width: 100%;
+            padding: 14px;
+            border: 2px solid #e0e0e0;
+            border-radius: 8px;
+            font-size: 15px;
+            transition: border-color 0.3s;
+        }
+
+        input[type="text"]:focus {
+            outline: none;
+            border-color: #667eea;
+        }
+
+        .help-text {
+            font-size: 13px;
+            color: #888;
+            margin-top: 6px;
+        }
+
+        button {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            border: none;
+            padding: 14px 32px;
+            border-radius: 8px;
+            font-size: 16px;
+            font-weight: 600;
+            cursor: pointer;
+            transition: transform 0.2s, box-shadow 0.2s;
+            width: 100%;
+        }
+
+        button:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.4);
+        }
+
+        button:active {
+            transform: translateY(0);
+        }
+
+        button:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+            transform: none;
+        }
+
+        .status {
+            margin-top: 20px;
+            padding: 14px;
+            border-radius: 8px;
+            font-size: 14px;
+            display: none;
+        }
+
+        .status.success {
+            background: #d4edda;
+            color: #155724;
+            border: 1px solid #c3e6cb;
+            display: block;
+        }
+
+        .status.error {
+            background: #f8d7da;
+            color: #721c24;
+            border: 1px solid #f5c6cb;
+            display: block;
+        }
+
+        .status.info {
+            background: #d1ecf1;
+            color: #0c5460;
+            border: 1px solid #bee5eb;
+            display: block;
+        }
+
+        .loader {
+            display: none;
+            border: 4px solid #f3f3f3;
+            border-top: 4px solid #667eea;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+            margin: 20px auto;
+        }
+
+        .loader.active {
+            display: block;
+        }
+
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+
+        .downloads-section {
+            margin-top: 40px;
+            padding-top: 30px;
+            border-top: 2px solid #f0f0f0;
+        }
+
+        .downloads-section h2 {
+            color: #333;
+            margin-bottom: 20px;
+            font-size: 20px;
+        }
+
+        .download-item {
+            background: #f8f9fa;
+            padding: 14px;
+            border-radius: 8px;
+            margin-bottom: 10px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+
+        .download-info {
+            flex: 1;
+        }
+
+        .download-name {
+            font-weight: 600;
+            color: #333;
+            margin-bottom: 4px;
+        }
+
+        .download-meta {
+            font-size: 12px;
+            color: #666;
+        }
+
+        .download-btn {
+            background: #667eea;
+            color: white;
+            border: none;
+            padding: 8px 16px;
+            border-radius: 6px;
+            font-size: 14px;
+            cursor: pointer;
+            text-decoration: none;
+            display: inline-block;
+        }
+
+        .download-btn:hover {
+            background: #5568d3;
+        }
+
+        .empty-state {
+            text-align: center;
+            color: #999;
+            padding: 20px;
+            font-style: italic;
+        }
+
+        .examples {
+            background: #f8f9fa;
+            padding: 15px;
+            border-radius: 8px;
+            margin-top: 20px;
+        }
+
+        .examples h3 {
+            font-size: 14px;
+            color: #555;
+            margin-bottom: 10px;
+        }
+
+        .examples code {
+            display: block;
+            background: white;
+            padding: 8px;
+            border-radius: 4px;
+            margin: 5px 0;
+            font-size: 12px;
+            color: #667eea;
+            word-break: break-all;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎬 M3U8 Video Downloader</h1>
+        <p class="subtitle">Download and convert HLS streams to MP4</p>
+
+        <div class="input-group">
+            <label for="videoUrl">Video URL</label>
+            <input 
+                type="text" 
+                id="videoUrl" 
+                placeholder="Paste m3u8 URL or segment URL from browser network tab"
+            >
+            <p class="help-text">
+                You can paste: m3u8 playlist URL, segment URL (.dts/.ts), or base URL with video ID
+            </p>
+        </div>
+
+        <button id="downloadBtn" onclick="startDownload()">Download Video</button>
+
+        <div class="loader" id="loader"></div>
+        <div class="status" id="status"></div>
+
+        <div class="examples">
+            <h3>📋 Supported URL formats:</h3>
+            <code>https://domain.com/video-id/playlist.m3u8</code>
+            <code>https://domain.com/video-id/720p/video172.dts</code>
+            <code>https://domain.com/video-id/</code>
+        </div>
+
+        <div class="downloads-section">
+            <h2>📥 Downloaded Videos</h2>
+            <div id="downloadsList">
+                <div class="empty-state">No downloads yet</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        function showStatus(message, type) {
+            const status = document.getElementById('status');
+            status.textContent = message;
+            status.className = 'status ' + type;
+        }
+
+        function hideStatus() {
+            document.getElementById('status').className = 'status';
+        }
+
+        async function startDownload() {
+            const url = document.getElementById('videoUrl').value.trim();
+            const btn = document.getElementById('downloadBtn');
+            const loader = document.getElementById('loader');
+
+            if (!url) {
+                showStatus('Please enter a URL', 'error');
+                return;
+            }
+
+            btn.disabled = true;
+            loader.classList.add('active');
+            hideStatus();
+            showStatus('Downloading and converting video... This may take a few minutes.', 'info');
+
+            try {
+                const response = await fetch('/download', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({ url: url })
+                });
+
+                const data = await response.json();
+
+                if (data.success) {
+                    showStatus('✓ Video downloaded successfully! Check the downloads section below.', 'success');
+                    loadDownloads();
+                    document.getElementById('videoUrl').value = '';
+                } else {
+                    showStatus('✗ Error: ' + data.error, 'error');
+                }
+            } catch (error) {
+                showStatus('✗ Network error: ' + error.message, 'error');
+            } finally {
+                btn.disabled = false;
+                loader.classList.remove('active');
+            }
+        }
+
+        async function loadDownloads() {
+            try {
+                const response = await fetch('/list-downloads');
+                const files = await response.json();
+                
+                const listDiv = document.getElementById('downloadsList');
+                
+                if (files.length === 0) {
+                    listDiv.innerHTML = '<div class="empty-state">No downloads yet</div>';
+                    return;
+                }
+
+                listDiv.innerHTML = files.map(file => `
+                    <div class="download-item">
+                        <div class="download-info">
+                            <div class="download-name">${file.name}</div>
+                            <div class="download-meta">${file.size} • ${file.created}</div>
+                        </div>
+                        <a href="/get-file/${file.name}" class="download-btn" download>Download</a>
+                    </div>
+                `).join('');
+            } catch (error) {
+                console.error('Error loading downloads:', error);
+            }
+        }
+
+        // Load downloads on page load
+        loadDownloads();
+
+        // Allow Enter key to trigger download
+        document.getElementById('videoUrl').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                startDownload();
+            }
+        });
+    </script>
+</body>
+</html>
