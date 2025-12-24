@@ -193,10 +193,12 @@ if __name__ == '__main__':
     if ffmpeg:
         print(f"✓ FFmpeg found: {ffmpeg}")
     else:
-        print("✗ FFmpeg not found!")
-        print("Please install ffmpeg or download from: https://www.gyan.dev/ffmpeg/builds/")
-        print("Extract and place ffmpeg.exe in this directory")
+        print("✗ FFmpeg not found in ffmpeg/bin/ folder!")
+        print("Please ensure Git LFS has pulled the ffmpeg binaries.")
     
-    print("\nStarting M3U8 Downloader...")
-    print("Open your browser at: http://localhost:5000")
+    print("\n" + "="*50)
+    print("🎬 ACS Video Downloader")
+    print("="*50)
+    print("\n✓ Server starting...")
+    print("✓ Open your browser at: http://localhost:5000\n")
     app.run(debug=True, port=5000)
